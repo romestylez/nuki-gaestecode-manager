@@ -94,8 +94,8 @@ python main.py
 Siehe [`.env.example`](.env.example).
 
 Wichtige Variablen:
-- `APTS` → Liste der Apartments (IDs frei wählbar).
-- `APT_<ID>_DRIVE_FILE_ID` → Google Drive File-ID.
+- `APTS` → Liste der Apartments (IDs frei wählbar z.B. APTS=1,2).
+- `APT_<ID>_DRIVE_FILE_ID` → Google Drive File-ID (z.B. APT_1_DRIVE_FILE_ID=)
 - `APT_<ID>_SMARTLOCK_ID` → Nuki Smartlock-ID.
 - `APT_<ID>_PIN` → Gäste-PIN.
 - `COL_ARRIVAL` / `COL_DEPARTURE` → Spaltenüberschriften aus der XLSX (z. B. `Anreise` / `Abreise` oder `Aankomstdatum` / `Vertrekdatum`).
