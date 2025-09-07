@@ -110,7 +110,11 @@ Wichtige Variablen:
 - `COL_ARRIVAL` / `COL_DEPARTURE` → Spaltenüberschriften aus der XLSX (z. B. `Anreise` / `Abreise` oder `Aankomstdatum` / `Vertrekdatum`).
 - `AUTH_NAME` → Der Name des Gäste-Codes im Nuki (Standard: `Gäste`).
 - `RUN_TIME` → Zeitpunkt des täglichen Laufs (Standard: `05:00`, z.B. `10:30` für Turnover-Optimierung).
-
+- `FORCE_SYNC_AFTER_CHANGE` → Optional (`true`/`false`).  
+  Wenn `true`, wird nach Änderungen am Gäste-Code sofort eine Synchronisierung mit Nuki Web ausgelöst.  
+  Vorteil: Änderungen sind in der App sofort sichtbar.  
+  Nachteil: Häufige Syncs können die Batterie des Smartlocks stärker beanspruchen.
+  
 ---
 
 ## 📧 E-Mail Report
