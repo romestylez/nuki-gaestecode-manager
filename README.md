@@ -104,7 +104,9 @@ Wichtige Variablen:
 - `APTS` → Liste der Apartments (IDs frei wählbar z.B. APTS=1,2).
 - `APT_<ID>_DRIVE_FILE_ID` → Google Drive File-ID (z.B. APT_1_DRIVE_FILE_ID=)
 - `APT_<ID>_SMARTLOCK_ID` → Nuki Smartlock-ID.
-- `APT_<ID>_PIN` → Gäste-PIN.
+- `APT_<ID>_PIN` → Gäste-PIN (optional).  
+  - Wird nur benötigt, wenn der Code **neu angelegt oder geändert** werden soll.  
+  - Falls der Code bereits im Nuki existiert und nicht geändert werden muss, kann diese Variable entfallen.
 - `COL_ARRIVAL` / `COL_DEPARTURE` → Spaltenüberschriften aus der XLSX (z. B. `Anreise` / `Abreise` oder `Aankomstdatum` / `Vertrekdatum`).
 - `AUTH_NAME` → Der Name des Gäste-Codes im Nuki (Standard: `Gäste`).
 - `RUN_TIME` → Zeitpunkt des täglichen Laufs (Standard: `05:00`, z.B. `10:30` für Turnover-Optimierung).
