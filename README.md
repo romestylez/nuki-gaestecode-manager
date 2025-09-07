@@ -9,7 +9,8 @@ Automatisiert die **Zeitfenster** eines festen Gäste-Codes („**Gäste**“) a
 - Am **Anreisetag** wird der Code ab `CHECKIN_TIME` aktiviert  
 - Der Code bleibt bis `CHECKOUT_TIME` am **Abreisetag** gültig  
 - Wenn **kein Aufenthalt** anliegt, wird der Code deaktiviert  
-- Läuft dauerhaft im Container und prüft **täglich um 05:00 Uhr (lokale Zeit)** die aktuellen Buchungslisten  
+- Läuft dauerhaft im Container und prüft die aktuellen Buchungslisten **täglich zur Uhrzeit aus `RUN_TIME` (Standard: 05:00)**  
+- Ein Lauf **nach der `CHECKOUT_TIME`** ist sinnvoll, weil bei sogenannten *Turnover-Tagen* (Abreise + Anreise am gleichen Tag) sichergestellt wird, dass der alte Code zuverlässig deaktiviert ist, bevor der neue Gast aktiviert wird (z. B. `RUN_TIME=10:30`).  
 - Schickt **täglich eine E-Mail** mit dem Ergebnis (OK/Fehler)  
 - Unterstützt **beliebig viele Apartments** per `.env` – keine Codeänderungen nötig  
 - Alle Aktionen werden zusätzlich in `/app/log` protokolliert (automatische Bereinigung nach `LOG_RETENTION_DAYS`)  
@@ -45,7 +46,6 @@ So ist jederzeit sichergestellt, dass der Gäste-PIN **immer korrekt gesetzt** i
   `https://drive.google.com/open?id=1zU8useBfWatmG8rTzYnTde9zRg1hxRzT&usp=drive_fs`  
   → Die ID ist `1zU8useBfWatmG8rTzYnTde9zRg1hxRzT`
 
-
 ### 2. Nuki Smartlock ID
 - Melde dich bei [Nuki Web](https://web.nuki.io) an.
 - Wähle dein Smart Lock.
@@ -58,15 +58,22 @@ So ist jederzeit sichergestellt, dass der Gäste-PIN **immer korrekt gesetzt** i
 - Kopiere den Token in `.env` → `NUKI_ACCESS_TOKEN`.
 
 ### 4. Google Drive Token (`/secrets/token.json`)
-- Richte die Google API ein (OAuth Client ID).
-- Lade `credentials.json` herunter.
-- Führe einmalig lokal aus:
-  ```bash
-  pip install google-api-python-client google-auth-httplib2 google-auth-oauthlib
-  python authorize_google.py
-  ```
-- Folge den Anweisungen, um `token.json` zu generieren.
-- Lege `token.json` im Container unter `/secrets/` ab.
+Damit das Skript auf deine Belegungstabellen zugreifen darf, musst du einmalig ein OAuth-Token erzeugen:
+
+1. Erstelle in der [Google Cloud Console](https://console.cloud.google.com/) ein **OAuth 2.0 Client ID** (Desktop-App).
+2. Lade die Datei **credentials.json** herunter.
+3. Lege sie in dein Projektverzeichnis neben `authorize_google.py`.
+4. Führe einmalig aus:
+   ```bash
+   pip install google-api-python-client google-auth-httplib2 google-auth-oauthlib
+   python authorize_google.py
+   ```
+5. Beim ersten Start öffnet sich ein Browserfenster → melde dich mit dem Google-Account an, der Zugriff auf die Belegungstabellen hat.
+6. Nach erfolgreicher Freigabe wird automatisch eine Datei **token.json** erzeugt.
+7. **Nur diese `token.json` kommt in den Container** → nach `/secrets/token.json`.  
+   Die `credentials.json` bleibt lokal bei dir und wird im Container nicht benötigt.
+
+> ⚠️ Ohne diesen Schritt kann das Skript nicht auf Google Drive zugreifen.
 
 ---
 
@@ -99,6 +106,8 @@ Wichtige Variablen:
 - `APT_<ID>_SMARTLOCK_ID` → Nuki Smartlock-ID.
 - `APT_<ID>_PIN` → Gäste-PIN.
 - `COL_ARRIVAL` / `COL_DEPARTURE` → Spaltenüberschriften aus der XLSX (z. B. `Anreise` / `Abreise` oder `Aankomstdatum` / `Vertrekdatum`).
+- `AUTH_NAME` → Der Name des Gäste-Codes im Nuki (Standard: `Gäste`).
+- `RUN_TIME` → Zeitpunkt des täglichen Laufs (Standard: `05:00`, z.B. `10:30` für Turnover-Optimierung).
 
 ---
 
