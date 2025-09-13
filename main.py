@@ -29,6 +29,7 @@ RUN_HOUR, RUN_MIN = map(int, run_time.split(":"))
 
 # Log-Retention
 LOG_RETENTION_DAYS = int(os.getenv("LOG_RETENTION_DAYS", "30"))
+LOG_BASENAME = os.getenv("LOG_BASENAME", "mail")
 
 # Mail-Einstellungen (Report wird IMMER versendet)
 SMTP_HOST = os.getenv("SMTP_HOST", "")
@@ -43,6 +44,11 @@ MAIL_SUBJECT_PREFIX = os.getenv("MAIL_SUBJECT_PREFIX", "Nuki Scheduler Report")
 # Optional: Nach Änderungen Sync via API anstoßen
 FORCE_SYNC = os.getenv("FORCE_SYNC_AFTER_CHANGE", "false").strip().lower() in ("1","true","yes","on")
 
+# Pre-Sync Einstellungen
+PRECHECK_FORCE_SYNC = os.getenv("PRECHECK_FORCE_SYNC", "true").strip().lower() in ("1","true","yes","on")
+PRECHECK_SYNC_WAIT_SEC = int(os.getenv("PRECHECK_SYNC_WAIT_SEC", "15"))
+PRECHECK_VERIFY_ATTEMPTS = int(os.getenv("PRECHECK_VERIFY_ATTEMPTS", "6"))
+
 # Buchungs-Spaltenüberschriften (aus der XLSX)
 COL_ARRIVAL = os.getenv("COL_ARRIVAL", "Aankomstdatum").strip()
 COL_DEPARTURE = os.getenv("COL_DEPARTURE", "Vertrekdatum").strip()
@@ -52,21 +58,9 @@ HEADERS = {"Authorization": f"Bearer {NUKI_TOKEN}", "Content-Type": "application
 
 # ========================= Apartments dynamisch laden =========================
 def load_apartments_from_env():
-    """
-    Liest Apartments dynamisch aus Umgebungsvariablen.
-
-    Erwartete Struktur:
-      - APTS=ID1,ID2,ID3
-      - APT_<ID>_DRIVE_FILE_ID=...  # Google Drive File-ID (XLSX)
-      - APT_<ID>_SMARTLOCK_ID=...   # Nuki Smartlock-ID (Zahl)
-      - [optional] APT_<ID>_PIN=...            # Gäste-PIN (Zahl), nur benötigt wenn neu angelegt/ändern
-      - [optional] APT_<ID>_NAME=...           # Anzeigename fürs Logging/Mail
-      - [optional] APT_<ID>_AUTH_NAME=...      # Name des Codes im Nuki (Default: "Gäste")
-    """
     apts = {}
     apt_ids = [x.strip() for x in os.getenv("APTS", "").split(",") if x.strip()]
     if not apt_ids:
-        # Fallback: automatisch alle APT_<ID>_SMARTLOCK_ID Variablen finden
         pattern = re.compile(r"^APT_(?P<id>[A-Za-z0-9\-]+)_SMARTLOCK_ID$")
         for k in os.environ.keys():
             m = pattern.match(k)
@@ -105,7 +99,7 @@ def load_apartments_from_env():
 
 APT = load_apartments_from_env()
 
-# ========================= Logging (deutsche Zeit & TZ) =========================
+# ========================= Logging =========================
 class TZFormatter(logging.Formatter):
     def __init__(self, fmt=None, datefmt=None, tz=None):
         super().__init__(fmt=fmt, datefmt=datefmt)
@@ -120,8 +114,9 @@ class TZFormatter(logging.Formatter):
 def setup_logging():
     logdir = "/app/log"
     os.makedirs(logdir, exist_ok=True)
-    today_str = dt.datetime.now(TZ).strftime("%Y-%m-%d")
-    logfile = f"{logdir}/nuki-{today_str}.log"
+    now_local = dt.datetime.now(TZ)
+    fname = f"{LOG_BASENAME}-{now_local.strftime('%Y-%m-%d')}.log"
+    logfile = os.path.join(logdir, fname)
 
     logger = logging.getLogger()
     logger.setLevel(logging.INFO)
@@ -129,8 +124,7 @@ def setup_logging():
         logger.removeHandler(h)
 
     formatter = TZFormatter("%(asctime)s %(levelname)s: %(message)s",
-                            "%d.%m.%Y %H:%M:%S",
-                            tz=TZ)
+                            "%d.%m.%Y %H:%M:%S", tz=TZ)
 
     fh = logging.FileHandler(logfile, encoding="utf-8")
     fh.setLevel(logging.INFO)
@@ -182,9 +176,6 @@ def send_report_mail(subject, body):
                 s.login(SMTP_USER, SMTP_PASSWORD)
             s.send_message(msg)
 
-logfile_path = setup_logging()
-log = logging.getLogger(__name__)
-
 # ========================= Drive Helper =========================
 DRIVE_SCOPES = ["https://www.googleapis.com/auth/drive.readonly"]
 TOKEN_PATH = "/secrets/token.json"
@@ -212,7 +203,6 @@ def load_bookings(file_id: str) -> pd.DataFrame:
     raw = download_xlsx_from_drive(file_id)
     df0 = pd.read_excel(io.BytesIO(raw), sheet_name=0, header=None)
 
-    # Headerzeile finden: Zeile, die beide Spaltennamen enthält
     arr_l = COL_ARRIVAL.strip().lower()
     dep_l = COL_DEPARTURE.strip().lower()
     header_row = None
@@ -226,14 +216,10 @@ def load_bookings(file_id: str) -> pd.DataFrame:
         raise ValueError(f"Kopfzeile mit Spalten '{COL_ARRIVAL}' und '{COL_DEPARTURE}' nicht gefunden.")
 
     df = pd.read_excel(io.BytesIO(raw), sheet_name=0, header=header_row)
-    # auf exakte Spaltennamen zugreifen; existierende alternative Spalten ignorieren
     for need in (COL_ARRIVAL, COL_DEPARTURE):
         if need not in df.columns:
             raise ValueError(f"Spalte '{need}' nicht in Tabelle gefunden.")
-    df = df.rename(columns={
-        COL_ARRIVAL: "arrival",
-        COL_DEPARTURE: "departure",
-    })
+    df = df.rename(columns={COL_ARRIVAL: "arrival", COL_DEPARTURE: "departure"})
     df = df.dropna(how="all")
     df["arrival"] = pd.to_datetime(df["arrival"], errors="coerce", dayfirst=True).dt.date
     df["departure"] = pd.to_datetime(df["departure"], errors="coerce", dayfirst=True).dt.date
@@ -242,10 +228,6 @@ def load_bookings(file_id: str) -> pd.DataFrame:
     return df
 
 def next_stay_interval(df: pd.DataFrame, today: dt.date):
-    """
-    Wählt entweder das aktuell gültige Intervall (a <= today < d) ODER das nächste zukünftige.
-    Gibt (start_utc, end_utc) zurück (naiv in UTC), oder None wenn weder heute noch künftig ein Aufenthalt.
-    """
     candidates = []
     for _, row in df.iterrows():
         a, d = row["arrival"], row["departure"]
@@ -294,11 +276,6 @@ def find_auth_by_name(smartlock_id, auth_name: str):
     return None
 
 def ensure_auth(smartlock_id, auth_name: str, pin: int | None):
-    """
-    Sucht den Code mit 'auth_name'. Falls nicht vorhanden:
-      - wenn pin vorhanden: neu anlegen
-      - sonst: Fehler (bitte PIN in .env setzen oder Code manuell anlegen)
-    """
     a = find_auth_by_name(smartlock_id, auth_name)
     if a:
         return a
@@ -323,7 +300,6 @@ def ensure_auth(smartlock_id, auth_name: str, pin: int | None):
             return r.json()
         except ValueError:
             pass
-    # letzter Versuch:
     return find_auth_by_name(smartlock_id, auth_name)
 
 def update_auth_timewindow(smartlock_id, auth_id, start_utc, end_utc):
@@ -343,13 +319,8 @@ def clear_auth_timewindow(smartlock_id, auth_id):
     r.raise_for_status()
 
 def force_sync(smartlock_id):
-    """
-    Erzwingt eine Synchronisierung im Nuki Web (asynchron).
-    Vorsicht: zu häufiges Syncen kann Batterie belasten.
-    """
     url = f"{BASE}/smartlock/{smartlock_id}/sync"
     r = requests.post(url, headers=HEADERS, timeout=20)
-    # akzeptiere 200/202/204 als "OK"
     if r.status_code not in (200, 202, 204):
         r.raise_for_status()
 
@@ -373,6 +344,36 @@ def times_equal(a: dt.datetime | None, b: dt.datetime | None, tol_sec: int = 60)
         return False
     return abs((a - b).total_seconds()) <= tol_sec
 
+# ========================= Pre-Sync Wrapper =========================
+def refresh_then_find_auth_by_name(smartlock_id: int, auth_name: str, apt_label: str | None = None):
+    label = apt_label or str(smartlock_id)
+    if PRECHECK_FORCE_SYNC:
+        try:
+            force_sync(smartlock_id)
+            logging.info(f"[OK] Pre-Sync für {label} ausgelöst")
+        except Exception as e:
+            logging.warning(f"[WARN] Pre-Sync für {label} fehlgeschlagen: {e}")
+
+    last_seen = None
+    attempts = max(1, PRECHECK_VERIFY_ATTEMPTS)
+    wait_s = max(1, PRECHECK_SYNC_WAIT_SEC)
+
+    for _ in range(attempts):
+        time.sleep(wait_s)
+        a = find_auth_by_name(smartlock_id, auth_name)
+        if a:
+            last_seen = a
+            upd = parse_nuki_iso_utc_naive(a.get("updateDate"))
+            if upd:
+                upd_aware = upd.replace(tzinfo=dt.timezone.utc)  # upd war naiv -> als UTC markieren
+                now_aware = dt.datetime.now(dt.timezone.utc)
+                age_sec = (now_aware - upd_aware).total_seconds()
+                if age_sec <= wait_s:
+                    return a
+            else:
+                return a
+    return last_seen
+
 # ========================= Hauptlauf =========================
 def run_once() -> tuple[bool, str]:
     had_error = False
@@ -380,7 +381,7 @@ def run_once() -> tuple[bool, str]:
     today = dt.datetime.now(TZ).date()
 
     for ap_id, cfg in APT.items():
-        apt_name = cfg.get("name", f"App {ap_id}")
+        apt_name = cfg.get("name", f"Apartment {ap_id}")
         auth_name = cfg.get("auth_name", "Gäste")
         try:
             df = load_bookings(cfg["file_id"])
@@ -391,9 +392,11 @@ def run_once() -> tuple[bool, str]:
             if not auth_id:
                 raise RuntimeError(f"Keine authId für '{auth_name}' ({apt_name} / ID {ap_id}): {auth}")
 
+            label = f"Appartement {ap_id}"  # << für saubere Log-Ausgabe
+
             if iv:
                 desired_from_utc, desired_until_utc = iv
-                current_auth = find_auth_by_name(cfg["smartlock_id"], auth_name) or {}
+                current_auth = refresh_then_find_auth_by_name(cfg["smartlock_id"], auth_name, label) or {}
                 cur_from = parse_nuki_iso_utc_naive(current_auth.get("allowedFromDate"))
                 cur_until = parse_nuki_iso_utc_naive(current_auth.get("allowedUntilDate"))
 
@@ -418,7 +421,7 @@ def run_once() -> tuple[bool, str]:
                         except Exception as e:
                             logging.warning(f"[WARN] {apt_name}: Forced Sync fehlgeschlagen: {e}")
             else:
-                current_auth = find_auth_by_name(cfg["smartlock_id"], auth_name) or {}
+                current_auth = refresh_then_find_auth_by_name(cfg["smartlock_id"], auth_name, label) or {}
                 cur_from = parse_nuki_iso_utc_naive(current_auth.get("allowedFromDate"))
                 cur_until = parse_nuki_iso_utc_naive(current_auth.get("allowedUntilDate"))
                 if cur_from is None and cur_until is None:
@@ -442,24 +445,21 @@ def run_once() -> tuple[bool, str]:
             logging.error(msg)
             summary_lines.append(msg)
 
-    # Genau eine Leerzeile zwischen Zeilen im Mail-Body
     return had_error, "\n\n".join(summary_lines)
 
 def _next_run_time(now_local: dt.datetime) -> dt.datetime:
     today_target = dt.datetime(now_local.year, now_local.month, now_local.day, RUN_HOUR, RUN_MIN, tzinfo=TZ)
     if now_local < today_target:
         return today_target
-    # sonst morgen zur RUN_TIME
     tomorrow = now_local.date() + dt.timedelta(days=1)
     return dt.datetime(tomorrow.year, tomorrow.month, tomorrow.day, RUN_HOUR, RUN_MIN, tzinfo=TZ)
 
 def main(loop_mode: bool):
-    global logfile_path
-    logfile_path = setup_logging()
     cleanup_logs("/app/log", LOG_RETENTION_DAYS)
 
     if loop_mode:
         while True:
+            setup_logging()  # pro Lauf neu -> neue Datei nach Mitternacht
             had_error, summary = run_once()
             try:
                 date_str = dt.datetime.now(TZ).strftime("%d.%m.%Y")
@@ -471,11 +471,10 @@ def main(loop_mode: bool):
 
             now = dt.datetime.now(TZ)
             wake = _next_run_time(now)
-            sleep_s = (wake - now).total_seconds()
-            if sleep_s < 60:
-                sleep_s = 3600
+            sleep_s = max((wake - now).total_seconds(), 3600)
             time.sleep(sleep_s)
     else:
+        setup_logging()
         had_error, summary = run_once()
         try:
             date_str = dt.datetime.now(TZ).strftime("%d.%m.%Y")
